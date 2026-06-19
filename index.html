@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Inventory Order Request</title>
+
+<!-- Spreadsheet parsing: SheetJS (xlsx), loaded from cdnjs. Handles .xlsx and .csv -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Email sending: EmailJS browser SDK (primary). mailto: is the fallback. -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --ink: #1f2933;
+    --muted: #62707d;
+    --line: #dce3ea;
+    --brand: #2563eb;
+    --brand-dark: #1d4ed8;
+    --ok: #15803d;
+    --ok-bg: #dcfce7;
+    --err: #b91c1c;
+    --err-bg: #fee2e2;
+    --warn: #92400e;
+    --warn-bg: #fef3c7;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 16px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  header p { color: var(--muted); margin: 0 0 20px; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .card h2 {
+    font-size: 1.05rem;
+    margin: 0 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: var(--brand);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 700;
+    flex: none;
+  }
+
+  label { font-weight: 600; display: block; margin-bottom: 6px; }
+  input[type="file"], select {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    font-size: 1rem;
+  }
+  select:disabled { background: #f1f4f7; color: var(--muted); }
+
+  .msg { padding: 10px 12px; border-radius: 8px; font-size: 0.95rem; margin-top: 12px; }
+  .msg.ok   { background: var(--ok-bg);   color: var(--ok); }
+  .msg.err  { background: var(--err-bg);  color: var(--err); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn); }
+  .msg.info { background: #e0edff;        color: var(--brand-dark); }
+  .hidden { display: none !important; }
+
+  /* Table */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { width: 100%; border-collapse: collapse; min-width: 640px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { background: #f7f9fb; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); white-space: nowrap; }
+  td.num, th.num { text-align: right; }
+  tr.has-qty { background: #f0f7ff; }
+  input.qty {
+    width: 90px;
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 1rem;
+    text-align: right;
+  }
+  input.qty:focus { outline: 2px solid var(--brand); border-color: var(--brand); }
+
+  /* Sticky summary / submit bar */
+  .summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .summary .count { font-weight: 700; }
+  .summary .count span { color: var(--brand-dark); }
+  button.submit {
+    background: var(--brand);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 22px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  button.submit:hover { background: var(--brand-dark); }
+  button.submit:disabled { background: #9db5e8; cursor: not-allowed; }
+
+  .order-preview {
+    margin-top: 12px;
+    background: #f7f9fb;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  /* Mobile: stack table rows into cards */
+  @media (max-width: 600px) {
+    table { min-width: 0; }
+    thead { display: none; }
+    tr { display: block; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; padding: 6px 10px; }
+    td { display: flex; justify-content: space-between; gap: 12px; border: none; padding: 6px 0; text-align: right; }
+    td::before { content: attr(data-label); font-weight: 600; color: var(--muted); text-align: left; }
+    td.num { text-align: right; }
+    input.qty { width: 110px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Inventory Order Request</h1>
+    <p>Import inventory, pick a manufacturer, enter quantities, and send the order to the picker.</p>
+  </header>
+
+  <!-- 1. Import control -->
+  <section class="card">
+    <h2><span class="step">1</span> Import inventory</h2>
+    <label for="file">Spreadsheet file (.xlsx or .csv)</label>
+    <input type="file" id="file" accept=".xlsx,.csv" />
+    <div id="importMsg" class="msg info hidden"></div>
+  </section>
+
+  <!-- 2. Manufacturer dropdown -->
+  <section class="card">
+    <h2><span class="step">2</span> Choose manufacturer</h2>
+    <label for="mfr">Manufacturer</label>
+    <select id="mfr" disabled>
+      <option value="">Select a manufacturer</option>
+    </select>
+  </section>
+
+  <!-- 4. Summary + submit -->
+  <section class="card" id="submitCard" style="display:none;">
+    <h2><span class="step">4</span> Review &amp; submit</h2>
+    <div class="summary">
+      <div class="count"><span id="selCount">0</span> item(s) selected, total qty <span id="selQty">0</span></div>
+      <button class="submit" id="submitBtn" disabled>Send order request</button>
+    </div>
+    <pre class="order-preview hidden" id="orderPreview"></pre>
+    <div id="submitMsg" class="msg hidden"></div>
+  </section>
+
+  <!-- 3. Product table -->
+  <section class="card" id="tableCard" style="display:none;">
+    <h2><span class="step">3</span> Enter order quantities</h2>
+    <div id="tableMsg" class="msg warn hidden"></div>
+    <div class="table-scroll">
+      <table id="productTable">
+        <thead>
+          <tr>
+            <th>Manufacturer SKU</th>
+            <th>Our SKU</th>
+            <th>Short Description</th>
+            <th class="num">QOH</th>
+            <th class="num">Sell Price</th>
+            <th class="num">Order Qty</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ============================================================
+   EmailJS configuration — fill these in after setup (see README).
+   The public key being visible in page source is expected for
+   EmailJS; lock sending to your GitHub Pages domain in the
+   EmailJS dashboard (allowed-domain restriction).
+   ============================================================ */
+const EMAILJS_PUBLIC_KEY  = "...";
+const EMAILJS_SERVICE_ID  = "...";
+const EMAILJS_TEMPLATE_ID = "...";
+const PICKER_EMAIL        = "picker@ourcompany.com"; // hardcoded order-picker address
+
+const EMAIL_SUBJECT = "Booth Order Request";
+
+// Exact expected column headers (trimmed on import).
+const COLUMNS = {
+  manufacturer: "Manufacturer",
+  ourSku:       "Item Number",
+  mfrSku:       "MFG Part #",
+  location:     "Location",
+  desc:         "Item Description",
+  qoh:          "1 HARDWARE SALES INC Value",
+  promoprice:   "Promotion Price",
+  defaultprice: "Retail Price"
+};
+
+/* ---- State: imported data lives in memory until a new file is imported ---- */
+let inventory = [];     // array of row objects, each gets a ._qty field
+let emailReady = false;
+
+/* ---- Init EmailJS if configured ---- */
+(function initEmail() {
+  const configured = EMAILJS_PUBLIC_KEY && EMAILJS_PUBLIC_KEY !== "...";
+  if (configured && window.emailjs) {
+    try {
+      emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+      emailReady = true;
+    } catch (e) {
+      console.warn("EmailJS init failed, will use mailto: fallback.", e);
+    }
+  }
+})();
+
+/* ---- Helpers ---- */
+const $ = (id) => document.getElementById(id);
+
+function showMsg(el, text, kind) {
+  el.textContent = text;
+  el.className = "msg " + kind;
+}
+
+function toNumber(v) {
+  if (v === null || v === undefined || v === "") return 0;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ""));
+  return isNaN(n) ? 0 : n;
+}
+
+function money(n) {
+  return "$" + Number(n).toFixed(2);
+}
+
+// Effective (selling) price = the lower of Promotion and Retail price.
+// Ignores missing/zero prices so a single blank cell doesn't collapse the min to $0.00.
+function effectivePrice(row) {
+  const candidates = [
+    toNumber(row[COLUMNS.promoprice]),
+    toNumber(row[COLUMNS.defaultprice]),
+  ].filter((p) => p > 0);
+  return candidates.length ? Math.min(...candidates) : 0;
+}
+
+// Collapse any run of whitespace (incl. \r, \n, \r\n, tabs) to a single space, then trim.
+// Excel header cells often contain in-cell line breaks; this makes matching robust.
+function normalizeHeader(h) {
+  return String(h).replace(/\s+/g, " ").trim();
+}
+
+/* ============================================================
+   1. Import + parse spreadsheet (defensive)
+   ============================================================ */
+$("file").addEventListener("change", (ev) => {
+  const file = ev.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      // header:1 => array-of-arrays so we can trim headers ourselves
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "" });
+      if (!rows.length) throw new Error("The file appears to be empty.");
+
+      const headers = rows[0].map(normalizeHeader);
+      const parsed = [];
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || r.every((c) => c === "" || c === null || c === undefined)) continue;
+        const obj = {};
+        headers.forEach((h, idx) => { obj[h] = r[idx] !== undefined ? r[idx] : ""; });
+        // Coerce numeric columns
+        obj[COLUMNS.qoh]   = toNumber(obj[COLUMNS.qoh]);
+        obj[COLUMNS.promoprice] = toNumber(obj[COLUMNS.promoprice]);
+        obj[COLUMNS.defaultprice] = toNumber(obj[COLUMNS.defaultprice]);
+        obj._qty = "";
+        parsed.push(obj);
+      }
+
+      inventory = parsed;
+      resetSelections();
+
+      // Warn (but still load) if expected columns are missing
+      const missing = Object.values(COLUMNS).filter((c) => !headers.includes(c));
+      let msg = `Loaded ${parsed.length} rows.`;
+      let kind = "ok";
+      if (missing.length) {
+        msg += ` Warning: missing expected column(s): ${missing.join(", ")}.`;
+        kind = "warn";
+      }
+      showMsg($("importMsg"), msg, kind);
+
+      populateManufacturers();
+    } catch (err) {
+      console.error(err);
+      inventory = [];
+      populateManufacturers();
+      showMsg($("importMsg"), "Could not read that file. Please import a valid .xlsx or .csv. (" + err.message + ")", "err");
+    }
+  };
+  reader.onerror = () => showMsg($("importMsg"), "Failed to read the file.", "err");
+  reader.readAsArrayBuffer(file);
+});
+
+/* ============================================================
+   2. Manufacturer dropdown
+   ============================================================ */
+function populateManufacturers() {
+  const sel = $("mfr");
+  sel.innerHTML = '<option value="">Select a manufacturer</option>';
+
+  const names = [...new Set(
+    inventory.map((r) => String(r[COLUMNS.manufacturer] || "").trim()).filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+
+  names.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  });
+
+  sel.disabled = names.length === 0;
+  sel.value = "";
+  $("tableCard").style.display = "none";
+  $("submitCard").style.display = "none";
+}
+
+$("mfr").addEventListener("change", renderTable);
+
+/* ============================================================
+   3. Product table (after a manufacturer is selected)
+   ============================================================ */
+function renderTable() {
+  const mfr = $("mfr").value;
+  const tbody = $("productTable").querySelector("tbody");
+  tbody.innerHTML = "";
+
+  if (!mfr) {
+    $("tableCard").style.display = "none";
+    $("submitCard").style.display = "none";
+    return;
+  }
+
+  $("tableCard").style.display = "";
+  $("submitCard").style.display = "";
+
+  // Filter to selected manufacturer AND QOH >= 1
+  const matches = inventory.filter(
+    (r) => String(r[COLUMNS.manufacturer] || "").trim() === mfr && toNumber(r[COLUMNS.qoh]) >= 1
+  );
+
+  if (!matches.length) {
+    showMsg($("tableMsg"), "No items in stock for this manufacturer.", "warn");
+    $("tableMsg").classList.remove("hidden");
+    updateSummary();
+    return;
+  }
+  $("tableMsg").classList.add("hidden");
+
+  matches.forEach((row) => {
+    const qoh = toNumber(row[COLUMNS.qoh]);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td data-label="Manufacturer SKU">${esc(row[COLUMNS.mfrSku])}</td>
+      <td data-label="Our SKU">${esc(row[COLUMNS.ourSku])}</td>
+      <td data-label="Short Description">${esc(row[COLUMNS.desc])}</td>
+      <td class="num" data-label="QOH">${qoh}</td>
+      <td class="num" data-label="Sell Price">${money(effectivePrice(row))}</td>
+      <td class="num" data-label="Order Qty"></td>
+    `;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "qty";
+    input.min = "0";
+    input.max = String(qoh);
+    input.value = row._qty;
+    input.addEventListener("input", () => {
+      let v = input.value === "" ? "" : Math.floor(Number(input.value));
+      if (v !== "" && v < 0) v = 0;
+      if (v !== "" && v > qoh) v = qoh;
+      if (v !== "" ) input.value = v;
+      row._qty = input.value;
+      tr.classList.toggle("has-qty", Number(row._qty) >= 1);
+      updateSummary();
+    });
+    tr.classList.toggle("has-qty", Number(row._qty) >= 1);
+    tr.lastElementChild.appendChild(input);
+    tbody.appendChild(tr);
+  });
+
+  updateSummary();
+}
+
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* ============================================================
+   4. Summary + submit
+   ============================================================ */
+function selectedRows() {
+  // Every row across the whole dataset with an entered quantity >= 1
+  return inventory.filter((r) => Number(r._qty) >= 1);
+}
+
+function resetSelections() {
+  inventory.forEach((r) => { r._qty = ""; });
+}
+
+function updateSummary() {
+  const sel = selectedRows();
+  const totalQty = sel.reduce((s, r) => s + Number(r._qty), 0);
+  $("selCount").textContent = sel.length;
+  $("selQty").textContent = totalQty;
+  $("submitBtn").disabled = sel.length === 0;
+
+  const preview = $("orderPreview");
+  if (sel.length) {
+    preview.textContent = buildBody(sel);
+    preview.classList.remove("hidden");
+  } else {
+    preview.classList.add("hidden");
+  }
+}
+
+function buildBody(rows) {
+  return rows.map((r) =>
+    `Manufacturer: ${r[COLUMNS.manufacturer]}\n` +
+    `SKU: ${r[COLUMNS.ourSku]}\n` +
+    `Location: ${r[COLUMNS.location]}\n` +
+    `Quantity: ${r._qty}\n` +
+    `---`
+  ).join("\n");
+}
+
+$("submitBtn").addEventListener("click", async () => {
+  const sel = selectedRows();
+  if (!sel.length) {
+    showMsg($("submitMsg"), "Nothing selected — enter a quantity of 1 or more on at least one item.", "warn");
+    $("submitMsg").classList.remove("hidden");
+    return;
+  }
+
+  const body = buildBody(sel);
+  const btn = $("submitBtn");
+
+  // If EmailJS isn't configured, go straight to the mailto: fallback.
+  if (!emailReady) {
+    showMsg($("submitMsg"),
+      "EmailJS isn't configured, so your email client will open with the order pre-filled. Review and send it.",
+      "info");
+    $("submitMsg").classList.remove("hidden");
+    openMailto(body);
+    return;
+  }
+
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = "Sending…";
+  try {
+    await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+      to_email: PICKER_EMAIL,
+      subject: EMAIL_SUBJECT,
+      order_body: body,
+    });
+    showMsg($("submitMsg"),
+      `Order sent to the picker (${sel.length} item(s)). Thank you!`, "ok");
+    $("submitMsg").classList.remove("hidden");
+  } catch (err) {
+    console.error(err);
+    showMsg($("submitMsg"),
+      "Sending via EmailJS failed. Opening your email client as a fallback…", "err");
+    $("submitMsg").classList.remove("hidden");
+    openMailto(body);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+
+/* mailto: fallback — same subject + body */
+function openMailto(body) {
+  const url = `mailto:${encodeURIComponent(PICKER_EMAIL)}` +
+    `?subject=${encodeURIComponent(EMAIL_SUBJECT)}` +
+    `&body=${encodeURIComponent(body)}`;
+  window.location.href = url;
+}
+</script>
+</body>
+</html>
